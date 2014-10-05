@@ -154,7 +154,7 @@ int main(int argc, char* argv[])
     vector<struct Atom> nearby;
     double nearby_radius, solvent_radius;
     int npos;
-    int k = 500;
+    int k = 1000;
     for(int i = 0; i < a.size(); i++){
         nearby_radius = a[i].radius + 2*p.radius + 2;
         solvent_radius = a[i].radius + p.radius;
@@ -167,6 +167,11 @@ int main(int argc, char* argv[])
             }
         }
         a[i].sasa = float(npos) / k;
-        printf("%f %d %d\n", a[i].sasa, npos, k);
+        printf("%5.1f %5d %5d %s %d %s\n",
+               100 * a[i].sasa, npos,
+               k,
+               a[i].atom_name.c_str(),
+               a[i].aa_id,
+               a[i].residue);
     }
 }
