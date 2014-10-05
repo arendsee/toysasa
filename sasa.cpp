@@ -9,8 +9,8 @@
 #include <string>
 #include <vector>
 #include <stdio.h>
-#include <stdlib.h>
 #include <cstdlib>
+#include <time.h>
 using namespace std;
 
 const double PI = acos(-1);
@@ -35,19 +35,6 @@ struct Probe
     double radius;
 };
 
-void print_atom(struct Atom a)
-{
-    printf("(%f, %f, %f) %s %s %s (%d, %d) %f\n",
-           a.pnt.x, a.pnt.y, a.pnt.z,
-           a.residue.c_str(),
-           a.element.c_str(),
-           a.atom_name.c_str(),
-           a.serial_id,
-           a.aa_id,
-           a.radius
-          );
-}
-
 void print_point(struct XYZ p)
 {
     printf("%f %f %f\n", p.x, p.y, p.z);
@@ -71,8 +58,8 @@ vector<struct Atom> load_pdb_file()
     map<string, float> radii;
     radii["C"] = 1.7;
     radii["H"] = 1.2;
-    radii["O"] = 1.5;
-    radii["N"] = 1.6;
+    radii["O"] = 1.52;
+    radii["N"] = 1.55;
     radii["S"] = 1.8;
 
     vector<Atom> atoms;
@@ -109,14 +96,14 @@ double dist(struct XYZ a, struct XYZ b)
                 (a.z - b.z) * (a.z - b.z));
 }
 
-bool is_too_close(struct Probe p, vector<struct Atom> a)
+bool accessible(struct Probe p, vector<struct Atom> a)
 {
     for(int i = 0; i < a.size(); i++){
         if(dist(p.pnt, a[i].pnt) < p.radius + a[i].radius){
-            return true;
+            return false;
         }
     }
-    return false; 
+    return true; 
 }
 
 vector<struct Atom> get_nearby_atoms(Atom a, vector<struct Atom> av, float d)
@@ -124,54 +111,120 @@ vector<struct Atom> get_nearby_atoms(Atom a, vector<struct Atom> av, float d)
     vector<struct Atom> nearby;
     for(int i = 0; i < av.size(); i++){
         if(dist(a.pnt, av[i].pnt) < d){
+            // Don't include self in the list of nearby atoms
+            if(a.serial_id == av[i].serial_id) {
+                continue;
+            }
             nearby.push_back(av[i]);
         }
     }
     return nearby;
 }
 
-struct XYZ get_random_surface_coordinate(struct XYZ p, double radius)
+struct XYZ get_random_surface_coordinate(struct XYZ p, double r)
 {
-    double r1 = ((double) rand() / RAND_MAX);
-    double r2 = ((double) rand() / RAND_MAX);
-
-    double xz = 2 * PI * r1;
-    double xy = acos(2 * r2 - 1);
-
+    double phi = 4 * PI * ((double) rand() / RAND_MAX) - 2 * PI;
+    double z = 2 * r * ((double) rand() / RAND_MAX) - r;
+    double x = sqrt(r*r - z*z) * cos(phi);
+    double y = sqrt(r*r - z*z) * sin(phi);
     struct XYZ p2;
-    p2.x = p.x + radius * cos(xz) * cos(xy);
-    p2.y = p.y + radius * sin(xy);
-    p2.z = p.z + radius * sin(xz);
-
+    p2.x = x + p.x;
+    p2.y = y + p.y;
+    p2.z = z + p.z;
     return p2;
 }
 
 int main(int argc, char* argv[])
 {
-    struct Probe p;
-    p.radius = 2;
+    srand(time(NULL));
+
+    // Initialize total van der Waals surface variable
+    double total_waals = 0;
+    // Initialize solvent accessible surface area variable
+    double total_sasa  = 0;
+    // Initalize total atomic surface area variable
+    double total_area  = 0;
+
     vector<struct Atom> a = load_pdb_file(); 
-    vector<struct Atom> nearby;
-    double nearby_radius, solvent_radius;
-    int npos;
-    int k = 1000;
+
+    // Initialize probe with default radius
+    struct Probe p;
+    p.radius = 1.4;
+
+    // Set number of random positions to probe for each atom
+    int k = 500;
+
+    // For each atom, calculate SASA
     for(int i = 0; i < a.size(); i++){
-        nearby_radius = a[i].radius + 2*p.radius + 2;
-        solvent_radius = a[i].radius + p.radius;
-        nearby = get_nearby_atoms(a[i], a, nearby_radius); 
-        npos = 0;
+        double nearby_radius = a[i].radius + 2*p.radius + 2;
+        double solvent_radius = a[i].radius + p.radius;
+
+        // Get nearby atoms (this is a speed optimization to avoid calculating
+        // distances to every atom in the protein in the monte carlo loop)
+        vector<struct Atom> nearby = get_nearby_atoms(a[i], a, nearby_radius); 
+
+        int solvent_accessible = 0;
+
+        // Count number of accessible positions on solvent surface
         for(int j = 0; j < k; j++){
             p.pnt = get_random_surface_coordinate(a[i].pnt, solvent_radius);
-            if(!is_too_close(p, nearby)){
-                npos++;
+            if(accessible(p, nearby)){
+                solvent_accessible++;
             }
         }
-        a[i].sasa = float(npos) / k;
-        printf("%5.1f %5d %5d %s %d %s\n",
-               100 * a[i].sasa, npos,
-               k,
-               a[i].atom_name.c_str(),
-               a[i].aa_id,
-               a[i].residue);
+
+        // Calculate approximate SASA (accessible / total)
+        double ratio = float(solvent_accessible) / k;
+
+        double atomic_area = 4 * PI * a[i].radius * a[i].radius;
+        double shell_area = 4 * PI * solvent_radius * solvent_radius;
+
+        double sasa = ratio * shell_area;
+        double waals = ratio * atomic_area;
+
+    // printf("%s-%-2d %4s %8.3f %8.3f %8.3f\n",
+    //        a[i].residue.c_str(),
+    //        a[i].aa_id,
+    //        a[i].atom_name.c_str(),
+    //        sasa,
+    //        atomic_area,
+    //        shell_area
+    //        );
+
+        total_waals += waals;
+        total_sasa += sasa;
+        total_area += atomic_area;
+        a[i].sasa = sasa;
     }
+
+    // Print atomic statistics
+    printf("Results for each atom\n");
+    for(int i = 0; i < a.size(); i++){
+        printf("%s-%-2d %3s %4.3f\n", a[i].residue.c_str(), a[i].aa_id, a[i].atom_name.c_str(), a[i].sasa);
+    }
+
+    // Print amino acid statistics
+    printf("\n");
+    printf("Results for each residue\n");
+    double total = 0;
+    int aa_id = 0;
+    string residue;
+    for(int i = 0; i < a.size(); i++){
+        if(a[i].aa_id != aa_id && aa_id > 0){
+            printf("%s-%-2d %f\n", residue.c_str(), aa_id, total);
+            total = 0;
+        }
+        aa_id = a[i].aa_id;
+        residue = a[i].residue;
+        total += a[i].sasa;
+        if(i == a.size() - 1){
+            printf("%s-%-2d %f\n", residue.c_str(), aa_id, total);
+        }
+    }
+
+    // Print totals
+    printf("\n");
+    printf("Total atomic area: %f\n", total_area); 
+    printf("Total van der Waals surface: %f\n", total_waals); 
+    printf("Total solvent accessible surface area: %f\n", total_sasa); 
 }
